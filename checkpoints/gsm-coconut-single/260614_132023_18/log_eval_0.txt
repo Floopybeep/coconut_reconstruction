@@ -1,0 +1,9 @@
+Question # 1
+Question:		Jill gets paid $20 per hour to teach and $30 to be a cheerleading coach. If she works 50 weeks a year, 35 hours a week as a teacher and 15 hours a week as a coach, what's her annual salary?
+<bot><latent><eot>### 57500<|im_end|>
+GT output:		57500
+Model output:	57500
+Full output:	### 57500<|im_end|>
+
+
+Total accuracy: 100.00%
