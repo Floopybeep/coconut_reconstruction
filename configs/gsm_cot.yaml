@@ -1,0 +1,43 @@
+# Run with python main.py configs/gsm_cot.yaml
+
+wandb_project: coconut-reconstruction
+run_name: gsm-cot
+
+only_eval: False
+debug: False
+single_sample: False
+bf16: True
+
+cot: True
+coconut: False
+
+c_thought: 0
+epochs_per_stage: 0
+max_latent_stage: 0
+pad_latent_to_max: True
+save_only_improve: False
+
+num_epochs: 10
+lr: !!float "1e-4"
+weight_decay: 0.01
+batch_size_training: 64
+gradient_accumulation_steps: 1
+
+model_id: Qwen/Qwen3-0.6B
+save_path: checkpoints
+load_model_path: None
+resume_from_epoch: 0
+
+dataset_name: openai/gsm8k
+dataset_config_name: main
+train_split: train
+val_split: test
+max_new_tokens: 64
+
+step_extraction_method: equations         # equations extract everything between << and >>. cot extractes only the cot.
+# step_extraction_method: cot
+add_special_tokens: False
+
+reset_optimizer: False
+seed: 42
+uniform_prob: 0.0
