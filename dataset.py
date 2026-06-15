@@ -118,6 +118,7 @@ class LatentDataset(Dataset):
         final_answer_column: Optional[str] = None,
         step_extraction_method: str = "equations",
         add_special_tokens: bool = True,
+        single_sample: bool = False,
     ):
         self.tokenizer = tokenizer
         self.latent_id = latent_id
@@ -131,6 +132,7 @@ class LatentDataset(Dataset):
         self.answer_column = answer_column
         self.final_answer_column = final_answer_column
         self.step_extraction_method = step_extraction_method
+        self.single_sample = single_sample
 
         raw_dataset = _load_hf_split(
             dataset_name=dataset_name,
@@ -180,6 +182,7 @@ class LatentDataset(Dataset):
                 "add_special_tokens",
                 not getattr(configs, "no_bot_tokens", False),
             ),
+            single_sample=getattr(configs, "single_sample", False),
         )
 
     def __len__(self):
@@ -233,12 +236,17 @@ class LatentDataset(Dataset):
             add_special_tokens=False,
         ) + [self.tokenizer.eos_token_id]
 
-        n_replaced_steps = min(self.stage, len(steps_tokenized))
-        latent_count = n_replaced_steps * self.c_thought
-        latent_tokens = [self.latent_id] * latent_count
-        remaining_step_tokens = list(
-            itertools.chain.from_iterable(steps_tokenized[n_replaced_steps:])
-        )
+        if self.single_sample:
+            latent_count = self.c_thought
+            latent_tokens = [self.latent_id] * latent_count
+            remaining_step_tokens = []
+        else:
+            n_replaced_steps = min(self.stage, len(steps_tokenized))
+            latent_count = n_replaced_steps * self.c_thought
+            latent_tokens = [self.latent_id] * latent_count
+            remaining_step_tokens = list(
+                itertools.chain.from_iterable(steps_tokenized[n_replaced_steps:])
+            )
 
         if self.add_special_tokens:
             reasoning_tokens = (

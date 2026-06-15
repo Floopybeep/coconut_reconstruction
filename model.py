@@ -34,7 +34,6 @@ class Coconut(nn.Module):
         self.start_latent_id = start_latent_id
         self.end_latent_id = end_latent_id
         self.pad_id = eos_token_id
-        self.kv_cache = None
         self.device = device
 
         if isinstance(base_causallm, GPT2LMHeadModel):
@@ -62,12 +61,7 @@ class Coconut(nn.Module):
         attention_mask=None,
         position_ids=None,
         labels=None,
-        reset_kv_cache=False,
     ):
-        # KV cache is not implemented for this demo
-        if reset_kv_cache:
-            self.kv_cache = None
-
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         input_ids = input_ids.to(self.device)
@@ -150,7 +144,7 @@ class Coconut(nn.Module):
         if labels is not None:
             shift_logits = outputs.logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            loss = CrossEntropyLoss()(
+            loss = CrossEntropyLoss(ignore_index=-100, reduction="sum")(
                 shift_logits.view(-1, shift_logits.size(-1)),
                 shift_labels.view(-1),
             )
@@ -162,38 +156,12 @@ class Coconut(nn.Module):
             logits=outputs.logits,
             past_key_values=outputs.past_key_values,
         )
-
-        # # 1. Find <bot> and <eot>
-        # idx_bot = torch.where(input_ids == self.start_latent_id)[0].item()
-        # idx_eot = torch.where(input_ids == self.end_latent_id)[0].item()
-
-        # # 2. Compute everything before <bot> in one go
-        # init_embeds = self.embedding(input_ids[:idx_bot+1]).unsqueeze(0)
-
-        # # 3. From <bot>, compute one step at a time for each <latent>
-        # embeds = init_embeds
-        # for i in range(idx_bot, idx_eot):
-        #     outputs  = self.base_causallm(inputs_embeds=embeds,
-        #                                 attention_mask=attention_mask[:i],
-        #                                 position_ids=position_ids[:i],
-        #                                 output_hidden_states=True)
-            
-        #     next_embeds = outputs.hidden_states[-1][:, -1, :]       # hidden state for next predicted latent token
-        #     embeds = torch.concat([embeds, next_embeds])
-        
-        # # 4. Run a final pass including <eot>
-        # outputs = self.base_causallm(inputs_embeds=embeds,
-        #                                 attention_mask=attention_mask[:idx_eot+1],
-        #                                 position_ids=position_ids[:idx_eot+1],
-        #                                 output_hidden_states=True)
-
-        # return outputs.hidden_states[-1]
     
     def generate(self, input_ids, max_new_tokens=32):
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
         input_ids = input_ids.to(self.device)
-        assert input_ids.shape[0] == 1, "generate currently supports batch size 1"
+        assert input_ids.shape[0] == 1, "only batch size of 1 is allowed"
 
         # First pass to obtain embeddings until the <eot> token
         outputs = self.forward(input_ids)

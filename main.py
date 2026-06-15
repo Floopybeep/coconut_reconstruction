@@ -91,10 +91,17 @@ def main():
 
     # Load model configs if settings indicate so
     if configs.load_model_path != "None":
-        saved_checkpoint = torch.load(configs.load_model_path, weights_only=False)
+        saved_checkpoint = torch.load(
+            configs.load_model_path,
+            map_location="cpu",
+            weights_only=False,
+        )
         saved_weights = saved_checkpoint["model_state_dict"]
         model.load_state_dict(saved_weights, strict=False)
+        del saved_checkpoint, saved_weights
         model.to(device=device, dtype=torch.bfloat16)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     optimizer = bnb.optim.Adam8bit(
         model.parameters(),
@@ -137,6 +144,8 @@ def main():
             stage = min(epoch // configs.epochs_per_stage, configs.max_latent_stage)
         elif configs.cot:
             stage = 0
+        if configs.single_sample:
+            stage = 6
 
         train_dataset = None
         if not configs.only_eval:
@@ -208,6 +217,7 @@ def main():
                     f"{len(train_dataset)} copies, "
                     f"{configs.single_sample_steps_per_epoch} optimizer steps per epoch"
                 )
+                print(tokenizer.decode(train_dataset[0]["input_ids"]))
         print(f"Loaded validation dataset: {len(val_dataset)} samples")
 
         path_log = os.path.join(save_dir, f"log_eval_{epoch}.txt")
@@ -215,39 +225,66 @@ def main():
         if not configs.only_eval:
 
             train_steps = 0
-            total_len = len(train_dataloader) // configs.gradient_accumulation_steps
+            total_len = (
+                len(train_dataloader) + configs.gradient_accumulation_steps - 1
+            ) // configs.gradient_accumulation_steps
             pbar = tqdm(colour="blue", desc=f"Train Epoch {epoch+1}", total=total_len)
 
             # Training step
             model.train()
-            for step, batch in enumerate(train_dataloader):
-                train_steps += 1
 
-                batch = {
-                    key: value.to(device)
-                    for key, value in batch.items()
-                    if key in {"input_ids", "attention_mask", "position_ids", "labels"}
-                }
-                outputs = model(**batch)
-                loss = outputs.loss / configs.gradient_accumulation_steps
-                display_loss = (
-                    loss.detach().float().item()
-                    * configs.gradient_accumulation_steps
-                )
+            train_iter = iter(train_dataloader)
+            for update_step in range(total_len):
+                accum_batches = []
+                total_valid_tokens = 0
+
+                for _ in range(configs.gradient_accumulation_steps):
+                    try:
+                        batch = next(train_iter)
+                    except StopIteration:
+                        break
+
+                    total_valid_tokens += (
+                        batch["labels"][..., 1:] != -100
+                    ).sum().item()
+                    accum_batches.append(batch)
+                    train_steps += 1
+
+                if not accum_batches:
+                    break
+                if total_valid_tokens == 0:
+                    raise ValueError(
+                        "No valid target tokens found in the accumulation window."
+                    )
+
+                optimizer.zero_grad(set_to_none=True)
+                loss_sum_for_display = 0.0
+
+                for batch in accum_batches:
+                    batch = {
+                        key: value.to(device)
+                        for key, value in batch.items()
+                        if key in {"input_ids", "attention_mask", "position_ids", "labels"}
+                    }
+                    outputs = model(**batch)
+                    loss_sum_for_display += outputs.loss.detach().float().item()
+                    loss = outputs.loss / total_valid_tokens
+                    loss.backward()
+
+                    del outputs, loss, batch
+
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                pbar.update(1)
+
+                display_loss = loss_sum_for_display / total_valid_tokens
                 pbar.set_postfix(loss=f"{display_loss:.4f}")
-                loss.backward()
-
-                if (step + 1) % configs.gradient_accumulation_steps == 0:
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    pbar.update(1)
                 
-
                 if not configs.only_eval and not configs.debug:
                     wandb_run.log({
                         "train/epoch": epoch + 1,
-                        "train/step": epoch * len(train_dataloader) + step,
-                        "train/loss": loss.detach().float() * configs.gradient_accumulation_steps
+                        "train/step": epoch * total_len + update_step,
+                        "train/loss": display_loss
                     })
             
             if not configs.save_only_improve and not configs.debug and not configs.only_eval:
@@ -268,8 +305,15 @@ def main():
                 gt_answer = batch["answer"][0].split("#")[-1].strip()
                 input_ids = batch["input_ids"].to(device)
 
-                # Remove language tokens after <eot> to evaluate generation accuracy
-                if configs.cot:
+                # Remove the answer while preserving the exact training prompt.
+                if configs.single_sample:
+                    answer_positions = (batch["labels"][0] != -100).nonzero(as_tuple=False)
+                    if len(answer_positions) == 0:
+                        raise ValueError(
+                            "Cannot build eval prompt because no answer labels are present."
+                        )
+                    eval_input_ids = input_ids[:, : answer_positions[0].item()]
+                elif configs.cot:
                     question_length = batch["question_length"][0].item()
                     eval_input_ids = input_ids[:, :question_length]
                 else:
@@ -286,8 +330,12 @@ def main():
 
                 with open(path_log, "a") as f:
                     f.write(f"Question # {idx + 1}\n")
+                    if configs.single_sample:
+                        f.write(f"Question:\t\t{tokenizer.decode(batch["input_ids"])[0]}\n")
                     f.write(f"GT output:\t\t{gt_answer}\n")
                     f.write(f"Model output:\t{output_extracted}\n")
+                    if configs.single_sample:
+                        f.write(f"Full output:\t{output_text}\n")
                 
                 correct += output_extracted == gt_answer
             
