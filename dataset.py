@@ -119,6 +119,8 @@ class LatentDataset(Dataset):
         step_extraction_method: str = "equations",
         add_special_tokens: bool = True,
         single_sample: bool = False,
+        prompt_only: bool = False,
+        pad_latent_to_max: bool = True,
     ):
         self.tokenizer = tokenizer
         self.latent_id = latent_id
@@ -133,6 +135,8 @@ class LatentDataset(Dataset):
         self.final_answer_column = final_answer_column
         self.step_extraction_method = step_extraction_method
         self.single_sample = single_sample
+        self.prompt_only = prompt_only
+        self.pad_latent_to_max = pad_latent_to_max
 
         raw_dataset = _load_hf_split(
             dataset_name=dataset_name,
@@ -158,6 +162,7 @@ class LatentDataset(Dataset):
         stage: int,
         split: str,
         max_size: Optional[int] = None,
+        prompt_only: bool = False,
     ):
         return cls(
             tokenizer=tokenizer,
@@ -183,6 +188,8 @@ class LatentDataset(Dataset):
                 not getattr(configs, "no_bot_tokens", False),
             ),
             single_sample=getattr(configs, "single_sample", False),
+            prompt_only=prompt_only,
+            pad_latent_to_max=getattr(configs, "pad_latent_to_max", True),
         )
 
     def __len__(self):
@@ -235,6 +242,31 @@ class LatentDataset(Dataset):
             "### " + normalized["answer"],
             add_special_tokens=False,
         ) + [self.tokenizer.eos_token_id]
+
+        if self.prompt_only:
+            if self.single_sample:
+                latent_count = self.c_thought
+            elif self.pad_latent_to_max:
+                latent_count = self.stage * self.c_thought
+            else:
+                latent_count = min(self.stage, len(steps_tokenized)) * self.c_thought
+
+            latent_tokens = [self.latent_id] * latent_count
+            if self.add_special_tokens:
+                reasoning_tokens = [self.start_id] + latent_tokens + [self.end_id]
+            else:
+                reasoning_tokens = latent_tokens
+
+            input_ids = question_tokenized + reasoning_tokens
+            return {
+                "input_ids": input_ids,
+                "attention_mask": [1] * len(input_ids),
+                "labels": [-100] * len(input_ids),
+                "idx": normalized["idx"],
+                "latent_tokens": latent_count,
+                "answer": normalized["answer"],
+                "question_length": len(question_tokenized),
+            }
 
         if self.single_sample:
             latent_count = self.c_thought

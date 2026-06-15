@@ -147,6 +147,13 @@ def main():
         if configs.single_sample:
             stage = 6
 
+        if configs.reset_optimizer and epoch % configs.epocs_per_stage == 0:
+            optimizer = bnb.optim.Adam8bit(
+                model.parameters(),
+                lr=configs.lr,
+                weight_decay=configs.weight_decay
+            )
+
         train_dataset = None
         if not configs.only_eval:
             base_train_dataset = LatentDataset.from_config(
@@ -198,6 +205,7 @@ def main():
             stage=stage,
             split=val_split,
             max_size=max_dataset_size,
+            prompt_only=True,
         )
         if configs.single_sample:
             val_dataset = _single_sample_subset(
@@ -303,26 +311,7 @@ def main():
 
             for idx, batch in tqdm(enumerate(val_dataloader), colour="blue", desc=f"Test accuracy for epoch {epoch + 1}"):
                 gt_answer = batch["answer"][0].split("#")[-1].strip()
-                input_ids = batch["input_ids"].to(device)
-
-                # Remove the answer while preserving the exact training prompt.
-                if configs.single_sample:
-                    answer_positions = (batch["labels"][0] != -100).nonzero(as_tuple=False)
-                    if len(answer_positions) == 0:
-                        raise ValueError(
-                            "Cannot build eval prompt because no answer labels are present."
-                        )
-                    eval_input_ids = input_ids[:, : answer_positions[0].item()]
-                elif configs.cot:
-                    question_length = batch["question_length"][0].item()
-                    eval_input_ids = input_ids[:, :question_length]
-                else:
-                    eot_positions = (input_ids[0] == end_id).nonzero(as_tuple=False)
-                    if len(eot_positions) == 0:
-                        raise ValueError(
-                            "Cannot build eval prompt because <eot> is missing."
-                        )
-                    eval_input_ids = input_ids[:, : eot_positions[0].item() + 1]
+                eval_input_ids = batch["input_ids"].to(device)
 
                 output_tokens = model.generate(eval_input_ids, max_new_tokens=configs.max_new_tokens)
                 output_text = tokenizer.decode(output_tokens)
@@ -331,7 +320,7 @@ def main():
                 with open(path_log, "a") as f:
                     f.write(f"Question # {idx + 1}\n")
                     if configs.single_sample:
-                        f.write(f"Question:\t\t{tokenizer.decode(batch["input_ids"])[0]}\n")
+                        f.write(f"Question:\t\t{tokenizer.decode(batch['input_ids'][0])}\n")
                     f.write(f"GT output:\t\t{gt_answer}\n")
                     f.write(f"Model output:\t{output_extracted}\n")
                     if configs.single_sample:
