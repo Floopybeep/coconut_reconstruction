@@ -1,0 +1,9 @@
+Question # 1
+Question:		A candle melts by 2 centimeters every hour that it burns. How many centimeters shorter will a candle be after burning from 1:00 PM to 5:00 PM?
+<bot><latent><eot>
+GT output:		8
+Model output:	8
+Full output:	### 8<|im_end|>
+
+
+Total accuracy: 100.00%

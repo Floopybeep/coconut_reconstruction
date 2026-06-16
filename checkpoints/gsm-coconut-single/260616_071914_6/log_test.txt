@@ -1,0 +1,9 @@
+Question # 1
+Question:		Kylar went to the store to buy glasses for his new apartment. One glass costs $5, but every second glass costs only 60% of the price. Kylar wants to buy 16 glasses. How much does he need to pay for them?
+<bot><latent><eot>
+GT output:		64
+Model output:	64
+Full output:	### 64<|im_end|>
+
+
+Total accuracy: 100.00%

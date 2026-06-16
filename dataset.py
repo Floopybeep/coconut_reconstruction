@@ -121,6 +121,8 @@ class LatentDataset(Dataset):
         single_sample: bool = False,
         prompt_only: bool = False,
         pad_latent_to_max: bool = True,
+        max_latent_stage: Optional[int] = None,
+        dataset_mode: str = "train",
     ):
         self.tokenizer = tokenizer
         self.latent_id = latent_id
@@ -137,6 +139,8 @@ class LatentDataset(Dataset):
         self.single_sample = single_sample
         self.prompt_only = prompt_only
         self.pad_latent_to_max = pad_latent_to_max
+        self.max_latent_stage = max_latent_stage if max_latent_stage is not None else stage
+        self.dataset_mode = dataset_mode
 
         raw_dataset = _load_hf_split(
             dataset_name=dataset_name,
@@ -163,7 +167,11 @@ class LatentDataset(Dataset):
         split: str,
         max_size: Optional[int] = None,
         prompt_only: bool = False,
+        dataset_mode: Optional[str] = None,
     ):
+        if dataset_mode is None:
+            dataset_mode = "test" if prompt_only else "train"
+
         return cls(
             tokenizer=tokenizer,
             latent_id=latent_id,
@@ -190,6 +198,8 @@ class LatentDataset(Dataset):
             single_sample=getattr(configs, "single_sample", False),
             prompt_only=prompt_only,
             pad_latent_to_max=getattr(configs, "pad_latent_to_max", True),
+            max_latent_stage=getattr(configs, "max_latent_stage", stage),
+            dataset_mode=dataset_mode,
         )
 
     def __len__(self):
@@ -243,14 +253,30 @@ class LatentDataset(Dataset):
             add_special_tokens=False,
         ) + [self.tokenizer.eos_token_id]
 
-        if self.prompt_only:
-            if self.single_sample:
-                latent_count = self.c_thought
-            elif self.pad_latent_to_max:
-                latent_count = self.stage * self.c_thought
-            else:
-                latent_count = min(self.stage, len(steps_tokenized)) * self.c_thought
+        if self.single_sample:
+            latent_count = self.stage * self.c_thought
+            latent_tokens = [self.latent_id] * latent_count
+            remaining_step_tokens = []
 
+            if self.dataset_mode != "train":
+                if self.add_special_tokens:
+                    reasoning_tokens = [self.start_id] + latent_tokens + [self.end_id]
+                else:
+                    reasoning_tokens = latent_tokens
+
+                input_ids = question_tokenized + reasoning_tokens
+                return {
+                    "input_ids": input_ids,
+                    "attention_mask": [1] * len(input_ids),
+                    "labels": [-100] * len(input_ids),
+                    "idx": normalized["idx"],
+                    "latent_tokens": latent_count,
+                    "answer": normalized["answer"],
+                    "question_length": len(question_tokenized),
+                }
+
+        elif self.dataset_mode == "test" or self.prompt_only:
+            latent_count = self.max_latent_stage * self.c_thought
             latent_tokens = [self.latent_id] * latent_count
             if self.add_special_tokens:
                 reasoning_tokens = [self.start_id] + latent_tokens + [self.end_id]
@@ -268,17 +294,57 @@ class LatentDataset(Dataset):
                 "question_length": len(question_tokenized),
             }
 
-        if self.single_sample:
-            latent_count = self.c_thought
+        elif self.dataset_mode == "validation":
+            if self.stage > self.max_latent_stage:
+                n_replaced_steps = len(steps_tokenized)
+                latent_count = self.max_latent_stage * self.c_thought
+                remaining_step_tokens = []
+            else:
+                n_replaced_steps = min(self.stage, len(steps_tokenized))
+                latent_count = n_replaced_steps * self.c_thought
+                validation_steps_tokenized = steps_tokenized[n_replaced_steps:]
+                if n_replaced_steps < len(steps_tokenized):
+                    validation_steps_tokenized = validation_steps_tokenized[:-1]
+                remaining_step_tokens = list(
+                    itertools.chain.from_iterable(validation_steps_tokenized)
+                )
+
             latent_tokens = [self.latent_id] * latent_count
-            remaining_step_tokens = []
+
+            if self.add_special_tokens:
+                reasoning_tokens = (
+                    [self.start_id]
+                    + latent_tokens
+                    + [self.end_id]
+                    + remaining_step_tokens
+                )
+            else:
+                reasoning_tokens = latent_tokens + remaining_step_tokens
+
+            input_ids = question_tokenized + reasoning_tokens
+            return {
+                "input_ids": input_ids,
+                "attention_mask": [1] * len(input_ids),
+                "labels": [-100] * len(input_ids),
+                "idx": normalized["idx"],
+                "latent_tokens": latent_count,
+                "answer": normalized["answer"],
+                "question_length": len(question_tokenized),
+            }
+
         else:
-            n_replaced_steps = min(self.stage, len(steps_tokenized))
-            latent_count = n_replaced_steps * self.c_thought
+            if self.stage > self.max_latent_stage:
+                n_replaced_steps = len(steps_tokenized)
+                latent_count = self.max_latent_stage * self.c_thought
+                remaining_step_tokens = []
+            else:
+                n_replaced_steps = min(self.stage, len(steps_tokenized))
+                latent_count = n_replaced_steps * self.c_thought
+                remaining_step_tokens = list(
+                    itertools.chain.from_iterable(steps_tokenized[n_replaced_steps:])
+                )
+
             latent_tokens = [self.latent_id] * latent_count
-            remaining_step_tokens = list(
-                itertools.chain.from_iterable(steps_tokenized[n_replaced_steps:])
-            )
 
         if self.add_special_tokens:
             reasoning_tokens = (
